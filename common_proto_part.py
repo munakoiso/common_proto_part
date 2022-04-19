@@ -4,6 +4,7 @@ import os.path
 import sys
 import argparse
 
+FILE_PREFIX = ''
 FILE_SUFFIX = '.short'
 
 
@@ -68,7 +69,7 @@ class Field(Element):
         field.template += line[(line.find('=') + len(str(field.number)) + 2):]
         if i + 1 < len(lines) and len(lines[i + 1].strip()) == 0:
             i += 1
-            field.closure = lines[i]
+            field.closure = '\n'
         return field, i
 
     def __str__(self):
@@ -240,8 +241,8 @@ class File(Element):
                 comment = []
             elif '=' in line or 'common_proto_part' in line:
                 field, i = Field.parse(lines, i, comment=comment, enum=isinstance(stack[-1], Enum))
-
                 stack[-1].body.append(field)
+                comment = []
 
             elif line.strip().startswith('//'):
                 comment.append(line)
@@ -420,7 +421,7 @@ def generate_protos_from_common_part(messages):
 def compress_and_enumerate(filenames, common_file_name, message_names, common_message_name):
     messages = dict()
     files = dict()
-    filenames_compressed = [f + FILE_SUFFIX for f in filenames]
+    filenames_compressed = [FILE_PREFIX + f + FILE_SUFFIX for f in filenames]
     for filename in filenames:
         with open(filename, 'r') as f:
             file_lines = f.readlines()
@@ -472,7 +473,7 @@ def decompress(filenames, common_file_name, message_names, common_message_name):
     message_names += [common_message_name]
     messages = dict()
     files = dict()
-    filenames_compressed = [filename + FILE_SUFFIX for filename in filenames]
+    filenames_compressed = [FILE_PREFIX + filename + FILE_SUFFIX for filename in filenames]
     for i in range(len(filenames)):
         filename = filenames_compressed[i]
         with open(filename, 'r') as f:
@@ -506,9 +507,18 @@ if __name__ == '__main__':
     parser.add_argument('common_message',
                         type=str,
                         help='name of the common message')
-
+    parser.add_argument('--file-suffix',
+                        type=str,
+                        help='suffix for generated file')
+    parser.add_argument('--file-prefix',
+                        type=str,
+                        help='suffix for generated file')
     args = parser.parse_args()
 
+    if args.file_suffix:
+        FILE_SUFFIX = args.file_suffix
+    if args.file_prefix:
+        FILE_PREFIX = args.file_prefix
     if int(args.compress) + int(args.decompress) != 1:
         print("Use exactly one of --compress(-c)/--decompress(-d) flags")
         sys.exit(1)
