@@ -1,0 +1,30 @@
+syntax = "proto3";
+
+// some
+// comments
+// here
+message MyMessage2 {
+  enum MyCommonEnum {
+    MY_ENUM_UNSPECIFIED = 0;
+
+    MY_ENUM_SPECIFIED = 1;
+  }
+
+    enum MyEnum {
+    MY_ENUM_UNSPECIFIED = 0;
+
+    MY_ENUM_SPECIFIED = 1;
+  }
+
+  string common_field1 = -1;
+
+  string common_field2 = 3 [(value) = "0-2048"];
+
+  string common_field3 = -1;
+
+  string unique_field4 = 2;
+
+  string unique_field5 = -1;
+
+  string unique_field6 = -1;
+}
