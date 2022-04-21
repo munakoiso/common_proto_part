@@ -4,9 +4,6 @@ import os.path
 import sys
 import argparse
 
-FILE_PREFIX = ''
-FILE_SUFFIX = '.short'
-
 
 class Element:
     def __init__(self):
@@ -66,17 +63,16 @@ class Field(Element):
             field.number = int(units[name_index + 2][:-1])
         else:
             field.number = int(units[name_index + 2])
-        field.template += line[(line.find('=') + len(str(field.number)) + 2):]
+        field.template += line[(line.find('=') + len(str(field.number)) + 2):].rstrip()
         if i + 1 < len(lines) and len(lines[i + 1].strip()) == 0:
             i += 1
-            field.closure = '\n'
         return field, i
 
     def __str__(self):
         if self.hidden:
             return ''
         if self.message_to_copy:
-            return '// common_proto_part {0}\n'.format(self.message_to_copy)
+            return '// common_proto_part {0}'.format(self.message_to_copy)
         result = ''
         for c in self.header:
             result += str(c)
@@ -130,8 +126,7 @@ class Message(Element):
 
     def __str__(self):
         result = 'message {0}'.format(self.name) + ' {\n'
-        for b in self.body:
-            result += str(b)
+        result += '\n\n'.join([str(b) for b in self.body if not b.hidden]) + '\n'
         result += self.closure
         return result
 
@@ -147,7 +142,7 @@ class Message(Element):
                 else:
                     self.fields_without_numbers += 1
             self.elements_by_names[e.name] = e
-        self.body.sort(key=lambda x: -1 if isinstance(x, Enum) else (1e6 if x.number == -1 else x.number))
+        self.body.sort(key=lambda x: '0' + x.name if isinstance(x, Enum) else ('2' if x.number == -1 else '1' + '0' * (10 - len(str(x.number))) + str(x.number)))
 
     def hide(self, element):
         self.elements_by_names[element.name].hidden = True
@@ -178,8 +173,7 @@ class Enum(Element):
         result = ''
         for b in self.header:
             result += str(b)
-        for b in self.body:
-            result += str(b)
+        result += '\n\n'.join([str(b) for b in self.body if not b.hidden]) + '\n'
         result += self.closure
         return result
 
@@ -205,8 +199,7 @@ class File(Element):
         result = ''
         for b in self.header:
             result += str(b)
-        for b in self.body:
-            result += str(b)
+        result += '\n\n'.join([str(b) for b in self.body]) + '\n'
         result += self.closure
         return result
 
@@ -231,10 +224,9 @@ class File(Element):
                 stack.append(Enum())
                 new_struct = True
             elif '}' in line:
-                stack[-1].closure = lines[i]
+                stack[-1].closure = lines[i].rstrip()
                 if i + 1 < len(lines) and len(lines[i + 1].strip()) == 0:
                     i += 1
-                    stack[-1].closure += lines[i]
                 item = stack.pop()
                 messages[item.name] = item
                 stack[-1].body.append(item)
@@ -266,7 +258,7 @@ class File(Element):
 def compress_messages(messages, common_message_name):
     common = Message()
     common.name = common_message_name
-    common.closure = '}\n'
+    common.closure = '}'
     numbers_to_elements = dict()
     names_to_elements = dict()
 
@@ -281,7 +273,7 @@ def compress_messages(messages, common_message_name):
             continue
         in_all_messages = True
         for m in messages[1:]:
-            if element != m.elements_by_names.get(element.name, None):
+            if element.name not in m.elements_by_names or element != m.elements_by_names[element.name]:
                 in_all_messages = False
         if in_all_messages:
             element_copy = copy(element)
@@ -362,13 +354,13 @@ def enumerate_fields_in_messages(messages):
         name = None
         is_unique_name_by_number = True
         for m in messages:
-            current_name = m.elements_by_numbers.get(i)
-            if not current_name:
+            current_element = m.elements_by_numbers.get(i)
+            if not current_element:
                 continue
-            if name and name != current_name:
+            if name and name != current_element.name:
                 is_unique_name_by_number = False
                 break
-            name = m.elements_by_numbers.get(i)
+            name = m.elements_by_numbers.get(i).name
         if is_unique_name_by_number and not name:
             free_numbers.append(i)
         if name and is_unique_name_by_number:
@@ -381,6 +373,7 @@ def enumerate_fields_in_messages(messages):
                 element.number = i
                 m.prepare()
     all_fields_by_names = dict()
+    all_fields_by_numbers = dict()
     for m in messages:
         for name, element in m.elements_by_names.items():
             if not isinstance(element, Field):
@@ -388,19 +381,45 @@ def enumerate_fields_in_messages(messages):
             if element.name not in all_fields_by_names:
                 all_fields_by_names[element.name] = set()
             all_fields_by_names[element.name].add(element.number)
-
+            if element.number == -1:
+                continue
+            if element.number not in all_fields_by_numbers:
+                all_fields_by_numbers[element.number] = set()
+            all_fields_by_numbers[element.number].add(element.name)
     i = 0
     for name, numbers in all_fields_by_names.items():
-        if tuple(numbers) == (-1,):
-            inc = False
+        if -1 in numbers:
+            new_number = -1
+            for n in numbers:
+                if tuple(all_fields_by_numbers.get(n, [None])) == (name,):
+                    new_number = n
+                    break
+            if new_number == -1:
+                new_number = free_numbers[i]
+                i += 1
             for m in messages:
                 if name in m.elements_by_names:
-                    m.elements_by_names[name].number = free_numbers[i]
-                    inc = True
-            if inc:
-                i += 1
+                    if m.elements_by_names[name].number == -1:
+                        m.elements_by_names[name].number = new_number
     for m in messages:
         m.prepare()
+
+
+def expand_message(source_name, destination, name_to_message):
+    #destination.prepare()
+    if source_name not in name_to_message:
+        raise Exception("Message {0} expected, but not found.".format(source_name))
+    source = name_to_message[source_name]
+    for element in source.body:
+        if element.hidden:
+            continue
+        if isinstance(element, Field) and element.message_to_copy:
+            expand_message(element.message_to_copy, source, name_to_message)
+            element.hidden = True
+            continue
+        #if element.name in destination.elements_by_names:
+        #    continue
+        destination.body.append(element)
 
 
 def generate_protos_from_common_part(messages):
@@ -408,20 +427,19 @@ def generate_protos_from_common_part(messages):
     for m in messages:
         name_to_message[m.name] = m
     for m in messages:
-        for element in m.body:
+        i = 0
+        while i < len(m.body):
+            element = m.body[i]
             if isinstance(element, Field) and element.message_to_copy:
-                if element.message_to_copy not in name_to_message:
-                    raise Exception("Message {0} expected, but not found.".format(element.message_to_copy))
-                for source_element in name_to_message[element.message_to_copy].body:
-                    m.body.append(source_element)
+                expand_message(element.message_to_copy, m, name_to_message)
                 element.hidden = True
+            i += 1
         m.prepare()
 
 
-def compress_and_enumerate(filenames, common_file_name, message_names, common_message_name):
+def compress(filenames, common_file_name, message_names, common_message_name):
     messages = dict()
     files = dict()
-    filenames_compressed = [FILE_PREFIX + f + FILE_SUFFIX for f in filenames]
     for filename in filenames:
         with open(filename, 'r') as f:
             file_lines = f.readlines()
@@ -431,63 +449,56 @@ def compress_and_enumerate(filenames, common_file_name, message_names, common_me
     if os.path.exists(common_file_name):
         with open(common_file_name, 'r') as f:
             file_lines = f.readlines()
-        common_file = File.parse(file_lines, messages, filename=common_file_name)
+        common_file = File.parse(file_lines, dict(), filename=common_file_name)
     else:
         common_file = File()
     common_file.name = common_file_name
 
     common_message = compress_messages([messages[name] for name in message_names], common_message_name)
-    enumerate_fields_in_messages([messages[name] for name in message_names])
-    message_found_in_common_proto = False
+
+    common_file_messages = dict()
     for i in range(len(common_file.body)):
         m = common_file.body[i]
-        if m.name != common_message.name:
-            continue
-        message_found_in_common_proto = True
-        common_file.body[i] = common_message
-    if not message_found_in_common_proto:
+        common_file_messages[m.name] = i
+    if common_message.name in common_file_messages:
+        common_file.body[common_file_messages[common_message.name]] = common_message
+    else:
         common_file.body.append(common_message)
+
+    for name in message_names:
+        message = messages[name]
+        if not isinstance(message, Message):
+            continue
+        if name in common_file_messages:
+            common_file.body[common_file_messages[name]] = message
+        else:
+            common_file.body.append(message)
+
     with open(common_file.name, 'w') as f:
         f.write(str(common_file))
-
-    for i in range(len(filenames)):
-        if os.path.exists(filenames_compressed[i]):
-            with open(filenames_compressed[i], 'r') as f:
-                file_lines = f.readlines()
-            file = File.parse(file_lines, messages, filename=filenames_compressed[i])
-            existing_messages = dict()
-            new_messages = dict()
-            for message in file.body:
-                existing_messages[message.name] = message
-            for message in files[filenames[i]].body:
-                new_messages[message.name] = message
-            merged_messages = existing_messages | new_messages
-            file.body = [v for v in merged_messages.values()]
-        else:
-            file = files[filenames[i]]
-        with open(filenames_compressed[i], 'w') as f:
-            f.write(str(file))
 
 
 def decompress(filenames, common_file_name, message_names, common_message_name):
     message_names += [common_message_name]
     messages = dict()
     files = dict()
-    filenames_compressed = [FILE_PREFIX + filename + FILE_SUFFIX for filename in filenames]
-    for i in range(len(filenames)):
-        filename = filenames_compressed[i]
+    for filename in filenames:
         with open(filename, 'r') as f:
             file_lines = f.readlines()
-        files[filename] = File.parse(file_lines, messages, filename=filenames_compressed[i])
+        files[filename] = File.parse(file_lines, dict(), filename=filename)
         files[filename].name = filename
     with open(common_file_name, 'r') as f:
         file_lines = f.readlines()
     File.parse(file_lines, messages, filename=common_file_name)
 
+    enumerate_fields_in_messages([messages[name] for name in message_names])
     generate_protos_from_common_part([messages[name] for name in message_names])
-    for i in range(len(filenames)):
-        filename = filenames_compressed[i]
-        with open(filenames[i], 'w') as f:
+    for filename, file in files.items():
+        for i in range(len(file.body)):
+            file.body[i] = messages.get(file.body[i].name, file.body[i])
+
+    for filename in filenames:
+        with open(filename, 'w') as f:
             f.write(str(files[filename]))
 
 
@@ -507,22 +518,12 @@ if __name__ == '__main__':
     parser.add_argument('common_message',
                         type=str,
                         help='name of the common message')
-    parser.add_argument('--file-suffix',
-                        type=str,
-                        help='suffix for generated file')
-    parser.add_argument('--file-prefix',
-                        type=str,
-                        help='suffix for generated file')
     args = parser.parse_args()
 
-    if args.file_suffix:
-        FILE_SUFFIX = args.file_suffix
-    if args.file_prefix:
-        FILE_PREFIX = args.file_prefix
     if int(args.compress) + int(args.decompress) != 1:
         print("Use exactly one of --compress(-c)/--decompress(-d) flags")
         sys.exit(1)
     if args.compress:
-        compress_and_enumerate(args.files.split(','), args.common_file, args.messages.split(','), args.common_message)
+        compress(args.files.split(','), args.common_file, args.messages.split(','), args.common_message)
     if args.decompress:
         decompress(args.files.split(','), args.common_file, args.messages.split(','), args.common_message)
